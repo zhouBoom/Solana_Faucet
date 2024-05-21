@@ -1,28 +1,60 @@
-mod accounts;
-mod transactions;
-
+use solana_sdk::pubkey::Pubkey;
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
-use accounts::{load_or_create_account, ensure_balance};
-use transactions::transfer;
+use bs58;
+use std::convert::TryInto;
+use axum::{
+    routing::post,
+    http::StatusCode,
+    response::IntoResponse,
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
 
+///
+/// DevNet: https://api.devnet.solana.com
+/// TestNet: https://api.testnet.solana.com
 #[tokio::main]
 async fn main() {
-    // Solana RPC 客户端配置
-    let rpc_url = "https://api.testnet.solana.com";
-    let client = RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
+    // initialize tracing
+    tracing_subscriber::fmt::init();
 
-    // 密钥对文件路径
-    let keypair_path = "~/.config/solana/id.json";
+    // build router
+    let app = Router::new()
+        .route("/claim", post(claim));
 
-    // 加载或创建账户
-    let from_keypair = load_or_create_account(keypair_path).expect("Failed to load or create account");
+    // init listener
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")
+        .await
+        .unwrap();
+    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+    axum::serve(listener, app).await.unwrap();
+}
 
-    // 确保账户余额足够
-    ensure_balance(&client, &from_keypair, 1_000_000_000).await.expect("Failed to ensure balance");
+async fn claim(Json(param): Json<Claim>) -> impl IntoResponse {
+    let client = RpcClient::new(param.rpc);
+    
+    let pubkey_vec = bs58::decode(param.address).into_vec().unwrap();
+    let arr: [u8; 32] = pubkey_vec.try_into().unwrap();
+ 
+    let pubkey = Pubkey::new_from_array(arr);
 
-    // 执行转账
-    let to_pubkey = transfer(&client, &from_keypair, 1_000_000).await.expect("Failed to transfer");
+    let res = client.request_airdrop(&pubkey, param.amount).unwrap();
+    println!("Array: {:?}", res);
+    (StatusCode::OK, Json(ClaimRes {hash: res.to_string()}))
+}
 
-    println!("Transfer successful to {}", to_pubkey);
+///
+/// param struct
+#[derive(Deserialize)]
+struct Claim {
+    rpc: String,
+    address: String,
+    amount: u64
+}
+
+///
+/// res struct
+#[derive(Serialize)]
+struct ClaimRes {
+    hash: String
 }
